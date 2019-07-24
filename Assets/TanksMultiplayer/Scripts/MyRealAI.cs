@@ -264,19 +264,25 @@ namespace TanksMP
 
             if (bullets.Length > 0)
             {
-                int minColTime = int.MaxValue;
+                float minDist = Mathf.Infinity;
                 int minIndex = -1;
                 for (int i = 0; i < bullets.Length; i++)
                 {
-                    MotionInfo bulletMotionInfo = new MotionInfo(MotionType.Linear, bullets[i].Position, bullets[i].Velocity, bullets[i].gameObject);
-                    int colTime = WillCollide(bulletMotionInfo, m_PlayerMotionInfo, m_PredictionStep);
-                    if (colTime != -1)
+                    Vector3 bulletToPlayer = tankPlayer.Position - bullets[i].Position;
+                    bulletToPlayer = Vector3.ProjectOnPlane(bulletToPlayer, Vector3.up);
+                    Vector3 bulletVelocity = Vector3.ProjectOnPlane(bullets[i].Velocity, Vector3.up);
+
+                    float dist = Vector3.Distance(bullets[i].Position, tankPlayer.Position);
+
+                    if (Vector3.Angle(bulletToPlayer, bulletVelocity) > 30 && dist >= 3.5f)
                     {
-                        if (minColTime > colTime)
-                        {
-                            minColTime = colTime;
-                            minIndex = i;
-                        }
+                        continue;
+                    }
+
+                    if (minDist > dist)
+                    {
+                        minDist = dist;
+                        minIndex = i;
                     }
                 }
                 if (minIndex != -1)
@@ -386,7 +392,7 @@ namespace TanksMP
                 NavMeshPath path = new NavMeshPath();
                 NavMesh.CalculatePath(tankPlayer.Position, collectible.transform.position, NavMesh.AllAreas, path);
 
-                if(pathLength(path) < 10f)
+                if (pathLength(path) < 10f)
                 {
                     m_PowerUp = collectible;
                     ChangeState(AIState.SimpleGoToPowerup);
@@ -402,27 +408,31 @@ namespace TanksMP
                 (!isSightblocked && Vector3.Distance(m_Target.Position, tankPlayer.Position) < m_CombatDist))
             {
                 //used if none of the points are traversible
-                float maxDist = Mathf.Epsilon;
+                float maxDistFromEnemy = Mathf.Epsilon;
                 Vector3 maxDistPoint = Vector3.zero;
                 bool notBlocked = false;
 
+                //used for traversible points
+                float minDistToPlayer = Mathf.Infinity;
+                Vector3 minDistDir = Vector3.zero;
+
                 int i = 10;
-                float angleStep = 180f/i;
+                float angleStep = 360f/i;
 
                 NavMeshHit hitInfo;
                 for(Vector3 dir = tankPlayer.Position - m_Target.Position; i >= 0; i--, dir = Quaternion.Euler(0f, angleStep, 0f) * dir)
                 {
-                    if(NavMesh.Raycast(m_Target.Position, m_Target.Position + dir.normalized * m_CombatDist, out hitInfo, NavMesh.AllAreas))
+                    Vector3 idealpos = m_Target.Position + dir.normalized * m_CombatDist;
+                    if (NavMesh.Raycast(m_Target.Position, idealpos, out hitInfo, NavMesh.AllAreas))
                     {
                         Debug.DrawRay(m_Target.Position, dir, Color.red);
                         //Debug.Break();
 
-                        if (maxDist < hitInfo.distance)
+                        if (maxDistFromEnemy < hitInfo.distance)
                         {
-                            maxDist = hitInfo.distance;
+                            maxDistFromEnemy = hitInfo.distance;
                             maxDistPoint = hitInfo.position;
                         }
-                        continue;
                     }
                     else
                     {
@@ -430,13 +440,21 @@ namespace TanksMP
                         //Debug.Break();
 
                         notBlocked = true;
-                        tankPlayer.MoveTo(m_Target.Position + dir.normalized * m_CombatDist);
-                        break;
+
+                        float dist = Vector3.Distance(tankPlayer.Position, idealpos);
+
+                        if (minDistToPlayer > dist)
+                        {
+                            minDistToPlayer = dist;
+                            minDistDir = dir.normalized;
+                        }
                     }
                 }
 
                 if(!notBlocked)
                     tankPlayer.MoveTo(maxDistPoint);
+                else
+                    tankPlayer.MoveTo(m_Target.Position + minDistDir * m_CombatDist);
             }
             else
             {
@@ -509,6 +527,7 @@ namespace TanksMP
 
             if (collectibles.Length > 0)
             {
+                //SortByDist<Collectible> comparer = new SortByDist<Collectible>(tankPlayer);
                 SortByAStarDist<Collectible> comparer = new SortByAStarDist<Collectible>(tankPlayer);
 
                 //low health, prioritize finding health and sheild
@@ -522,6 +541,7 @@ namespace TanksMP
                     }
 
                     Collectible shield = Array.Find(collectibles, (Collectible c) => c.GetType() == typeof(PowerupShield));
+
                     if (shield)
                     {
                         return comparer.Compare(shield, healthBoosts[0]) < 0 ? shield : healthBoosts[0];
@@ -570,7 +590,7 @@ namespace TanksMP
         #region attack update helpers
         private void PreciseShootTarget()
         {
-            Vector3 targetVelocityApprox = ((m_Target.agent.desiredVelocity.magnitude + m_Target.agent.velocity.magnitude)/2f) * (m_Target.agent.steeringTarget - m_Target.Position).normalized;
+            Vector3 targetVelocityApprox = m_Target.agent.desiredVelocity.magnitude * (m_Target.agent.steeringTarget - m_Target.Position).normalized;
             MotionInfo targetMotion = new MotionInfo(MotionType.NavMeshAgent, m_Target.Position, targetVelocityApprox, m_Target.gameObject);
 
             Vector3 bulletDir = targetMotion.bounds.center - tankPlayer.shotPos.position;
@@ -829,8 +849,8 @@ namespace TanksMP
 
                 float pathLengthA = pathLength(pathA), pathLengthB = pathLength(pathB);
                 if (Mathf.Approximately(pathLengthA, pathLengthB)) return 0;
-                else if (pathLengthA < pathLengthB) return (int)(pathLengthA - pathLengthB);
-                else return (int)(pathLengthB - pathLengthA);
+                else if (pathLengthA < pathLengthB) return -1;
+                else return 1;
             }
         }
 
@@ -863,6 +883,7 @@ namespace TanksMP
             for (int i = 0; i < path.corners.Length - 1; i++)
             {
                 ret += Vector3.Distance(path.corners[i], path.corners[i + 1]);
+                Debug.DrawLine(path.corners[i], path.corners[i + 1], Color.black);
             }
 
             return ret;
@@ -947,6 +968,12 @@ namespace TanksMP
             {
                 Gizmos.color = Color.blue;
                 Gizmos.DrawWireSphere(m_Threat.Position, 0.5f);
+            }
+
+            if (m_PowerUp)
+            {
+                Gizmos.color = Color.green;
+                Gizmos.DrawWireSphere(m_PowerUp.transform.position, 2.0f);
             }
 
             Gizmos.color = Color.black;
