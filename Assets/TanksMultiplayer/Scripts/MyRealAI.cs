@@ -244,7 +244,7 @@ namespace TanksMP
         {
             base.OnInit();
             m_Collider = tankPlayer.GetComponent<Collider>();
-            ChangeState(AIState.ActivelyAttack);
+            ChangeState(AIState.FindPowerup);
             m_PlayerMotionInfo = new MotionInfo(MotionType.NavMeshAgent, tankPlayer.Position, tankPlayer.Velocity, tankPlayer.gameObject);
         }
 
@@ -707,6 +707,7 @@ namespace TanksMP
         {
             if (m_ThreatLastFrame == m_Threat)
             {
+                tankPlayer.SimpleMove();
                 return;
             }
 
