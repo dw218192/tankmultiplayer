@@ -707,7 +707,6 @@ namespace TanksMP
         {
             if (m_ThreatLastFrame == m_Threat)
             {
-                tankPlayer.SimpleMove();
                 return;
             }
 
