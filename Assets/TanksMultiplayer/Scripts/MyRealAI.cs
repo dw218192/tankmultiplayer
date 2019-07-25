@@ -708,21 +708,27 @@ namespace TanksMP
                 if(tankPlayer.health / (float) tankPlayer.maxHealth < 0.5)
                 {
                     Collectible[] healthBoosts = Array.FindAll(collectibles, (Collectible c) => c.GetType() == typeof(PowerupHealth));
-                    
-                    if(healthBoosts.Length > 0)
-                    {
-                        Array.Sort(healthBoosts, comparer);
-                    }
-
                     Collectible shield = Array.Find(collectibles, (Collectible c) => c.GetType() == typeof(PowerupShield));
 
-                    if (shield)
+                    if (healthBoosts.Length > 0)
                     {
-                        return comparer.Compare(shield, healthBoosts[0]) < 0 ? shield.spawner : healthBoosts[0].spawner;
+                        Array.Sort(healthBoosts, comparer);
+
+                        if (shield)
+                        {
+                            return comparer.Compare(shield, healthBoosts[0]) < 0 ? shield.spawner : healthBoosts[0].spawner;
+                        }
+                        else
+                        {
+                            return healthBoosts[0].spawner;
+                        }
                     }
                     else
                     {
-                        return healthBoosts[0].spawner;
+                        if(shield)
+                        {
+                            return shield.spawner;
+                        }
                     }
                 }
 
@@ -795,7 +801,7 @@ namespace TanksMP
 
             float a = (m_BulletSpeed * m_BulletSpeed) - (m_TankSpeed * m_TankSpeed);
             float b = 2 * dist * m_TankSpeed * cosTheta;
-            float c = -(dist * dist);
+            float c = -sqrDist;
 
             float t1, t2, hittime = float.NaN;
             SolveQuadEquation(a, b, c, out t1, out t2);
@@ -1251,7 +1257,6 @@ namespace TanksMP
         #endregion
 
         #region debug
-        /*
         private void OnGUI()
         {
             GUILayout.Box("num of surrounding bullets: " +
@@ -1261,7 +1266,6 @@ namespace TanksMP
             GUILayout.Box("current state: " + m_CurState.ToString());
             GUILayout.Box("sheild spawn countdown: " + (m_NextSpawnTime - Time.time).ToString());
         }
-        */
 
         private void OnDrawGizmos()
         {
