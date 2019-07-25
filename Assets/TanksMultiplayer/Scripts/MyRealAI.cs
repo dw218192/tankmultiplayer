@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.AI;
+using UnityEngine.SceneManagement;
 
 namespace TanksMP
 {
@@ -106,13 +107,13 @@ namespace TanksMP
                                 return ret;
                             }
                             
-                            Vector3 displacement = velocity * Time.deltaTime * timeStep;
-                            Vector3 tempPos = position + displacement;
+                            Vector3 displacement = velocity * Time.fixedDeltaTime * timeStep;
+                            Vector3 tempPos = bounds.center + displacement;
 
                             //Debug.DrawLine(position, tempPos, Color.cyan);
 
                             Vector3 obstaclePos;
-                            if(CheckObstaclesBetween(position, tempPos, out obstaclePos))
+                            if(CheckObstaclesBetween(bounds.center, tempPos, out obstaclePos, bounds.size))
                             {
                                 ret.center = obstaclePos;
                                 return ret;
@@ -160,7 +161,7 @@ namespace TanksMP
                             while (i < corners.Length)
                             {
                                 //calculate time it takes to reach the steering target
-                                stepsToCorner = Vector3.Distance(corners[i], pos) / (agent.speed * Time.deltaTime);
+                                stepsToCorner = Vector3.Distance(corners[i], pos) / (agent.speed * Time.fixedDeltaTime);
 
                                 if (accumulatedSteps + stepsToCorner > timeStep)
                                 {
@@ -178,7 +179,7 @@ namespace TanksMP
                                 //calculate time it takes to turn
                                 Vector3 desiredDir = corners[i+1] - corners[i];
                                 float angle = Vector3.Angle(velocity, desiredDir);
-                                stepsToTurn = angle / (agent.angularSpeed * Time.deltaTime);
+                                stepsToTurn = angle / (agent.angularSpeed * Time.fixedDeltaTime);
 
                                 if (accumulatedSteps + stepsToCorner + stepsToTurn > timeStep)
                                 {
@@ -217,24 +218,35 @@ namespace TanksMP
         [SerializeField] private float m_PredictionTime = 0.5f; //in sec
         private int m_PredictionStep; //how many frames for the prediction time
 
-        [SerializeField] private float m_BulletSensorRadius = 15.0f;
-        [SerializeField] private float m_PlayerSensorRadius = 35.0f;
-        [SerializeField] private float m_ItemSensorRadius = 50.0f;
-        [SerializeField] private float m_DodgeExtent = 10.0f;
-        [SerializeField] private float m_CombatDist = 5.0f;
+        [SerializeField] private float m_BulletSensorRadius = 15f;
+        [SerializeField] private float m_PlayerSensorRadius = 35f;
+        [SerializeField] private float m_ItemSensorRadius = 50f;
+        [SerializeField] private float m_CombatDist = 6f;
+        [SerializeField] private float m_EscapeDist = 10f;
 
+        //stats
         private float m_BulletSpeed = 10;
+        private float m_TankSpeed = 8;
+        private float m_BulletRadius = 0.2f;
+
         private Bullet m_Threat;
         private Bullet m_ThreatLastFrame;
 
         private BasePlayer m_Target;
-        private Collectible m_PowerUp;
+        private ObjectSpawner m_PowerUp;
 
         private AIState m_CurState;
         private AIState m_PrevState;
 
         private MotionInfo m_PlayerMotionInfo;
-        private Collider m_Collider;
+        private BoxCollider m_Collider;
+
+        private ObjectSpawner m_SheildSpawner;
+        private bool m_HasSheild, m_HasShieldLastFrame;
+        private float m_LastPickupTime;
+        private float m_NextSpawnTime;
+
+        private NavMeshPath m_PathBuffer = new NavMeshPath();
 
         //debug
         Bullet[] bullets;
@@ -243,9 +255,28 @@ namespace TanksMP
         protected override void OnInit()
         {
             base.OnInit();
-            m_Collider = tankPlayer.GetComponent<Collider>();
+            m_Collider = tankPlayer.GetComponent<BoxCollider>();
             ChangeState(AIState.FindPowerup);
             m_PlayerMotionInfo = new MotionInfo(MotionType.NavMeshAgent, tankPlayer.Position, tankPlayer.Velocity, tankPlayer.gameObject);
+            m_PredictionStep = Mathf.RoundToInt(m_PredictionTime / Time.fixedDeltaTime);
+        }
+
+        protected override void OnFixedUpdate()
+        {
+            base.OnFixedUpdate();
+
+            if (m_SheildSpawner)
+            {
+                m_HasSheild = m_SheildSpawner.obj ? true : false;
+
+                if (m_HasShieldLastFrame && !m_HasSheild)
+                {
+                    m_LastPickupTime = Time.time;
+                    m_NextSpawnTime = m_LastPickupTime + 10f;
+                }
+
+                m_HasShieldLastFrame = m_HasSheild;
+            }
         }
 
         protected override void OnUpdate()
@@ -254,13 +285,12 @@ namespace TanksMP
 
             m_ThreatLastFrame = m_Threat;
             m_Threat = null;
-            m_PredictionStep = Mathf.RoundToInt(m_PredictionTime / Time.deltaTime);
 
             m_PlayerMotionInfo.position = tankPlayer.Position;
             m_PlayerMotionInfo.velocity = tankPlayer.Velocity;
 
             bullets = CheckSurroundingObjectsByType(m_BulletSensorRadius,
-                (Bullet bullet) => !CheckObstaclesBetween(bullet.Position, tankPlayer.Position) && bullet.owner != tankPlayer.gameObject);
+                (Bullet bullet) => !CheckObstaclesBetween(bullet.Position, tankPlayer.Position, 0f) && bullet.owner != tankPlayer.gameObject);
 
             if (bullets.Length > 0)
             {
@@ -292,7 +322,7 @@ namespace TanksMP
                 }
             }
 
-            if (m_Target && !CheckObstaclesBetween(m_Target.Position, tankPlayer.Position))
+            if (m_Target && !CheckObstaclesBetween(m_Target.shotPos.position, tankPlayer.shotPos.position, m_BulletRadius))
             {
                 //aim
                 PreciseShootTarget();
@@ -325,7 +355,9 @@ namespace TanksMP
 
         private void ChangeState(AIState newState)
         {
-            if(newState != m_CurState)
+            ResumeAgentControl();
+
+            if (newState != m_CurState)
             {
                 m_PrevState = m_CurState;
             }
@@ -333,13 +365,28 @@ namespace TanksMP
             m_CurState = newState;
         }
 
+        private void ResumeAgentControl()
+        {
+            //reset agent
+            tankPlayer.agent.isStopped = false;
+            tankPlayer.agent.updateRotation = true;
+        }
+        
+        private void ManualControl(bool clearPath)
+        {
+            if(clearPath)
+                tankPlayer.agent.ResetPath();
+
+            tankPlayer.agent.isStopped = true;
+            tankPlayer.agent.updateRotation = false;
+        }
+
         private void DodgeAttackUpdate()
         {
-            tankPlayer.agent.updateRotation = false;
+            ManualControl(false);
 
             if (!m_Threat)
             {
-                tankPlayer.agent.updateRotation = true;
                 ChangeState(m_PrevState);
                 return;
             }
@@ -349,7 +396,7 @@ namespace TanksMP
 
         private void SimpleGoToPowerupUpdate()
         {
-            if (!m_PowerUp || !m_PowerUp.gameObject.activeSelf)
+            if (!m_PowerUp || !m_PowerUp.obj)
             {
                 ChangeState(AIState.ActivelyAttack);
                 return;
@@ -378,35 +425,43 @@ namespace TanksMP
                 return;
             }
 
-            Collectible collectible = SelectPowerup();
-
+            ObjectSpawner spawner = SelectPowerup();
             int numHitsLeft = NumOfHits(tankPlayer.health, tankPlayer.shield);
-            if (NumOfHits(m_Target.health, m_Target.shield) - numHitsLeft >= 3 && collectible)
-            {
-                ChangeState(AIState.SimpleGoToPowerup);
-                return;
-            }
+            int targetNumHitsLeft = NumOfHits(m_Target.health, m_Target.shield);
 
-            if (collectible)
+            if (spawner)
             {
-                NavMeshPath path = new NavMeshPath();
-                NavMesh.CalculatePath(tankPlayer.Position, collectible.transform.position, NavMesh.AllAreas, path);
-
-                if (PathLength(path) < 10f)
+                if (numHitsLeft != 0 && targetNumHitsLeft /  numHitsLeft >= 2)
                 {
-                    m_PowerUp = collectible;
                     ChangeState(AIState.SimpleGoToPowerup);
                     return;
                 }
+
+                NavMesh.CalculatePath(tankPlayer.Position, spawner.transform.position, NavMesh.AllAreas, m_PathBuffer);
+                float lengthToCollectible = PathLength(m_PathBuffer);
+
+                NavMesh.CalculatePath(tankPlayer.Position, m_Target.Position, NavMesh.AllAreas, m_PathBuffer);
+                float lengthToTarget = PathLength(m_PathBuffer);
+
+                if ((lengthToTarget >= 10f && targetNumHitsLeft > 1) || lengthToTarget >= 15f)
+                {
+                    if (lengthToCollectible <= 10f || (spawner.obj.GetType() == typeof(PowerupShield) && lengthToCollectible <= 15f))
+                    {
+                        m_PowerUp = spawner;
+                        ChangeState(AIState.SimpleGoToPowerup);
+                        return;
+                    }
+                }
             }
 
-            bool isSightblocked = CheckObstaclesBetween(m_Target.Position, tankPlayer.Position);
-            //colliding or too close
-            Collider c = m_Target.GetComponent<Collider>();
+            bool isSightblocked = CheckObstaclesBetween(m_Target.Position, tankPlayer.Position, 0f);
+            float linearDistToTarget = Vector3.Distance(m_Target.Position, tankPlayer.Position);
 
-            if ((c && c.bounds.Intersects(m_Collider.bounds)) ||
-                (!isSightblocked && Vector3.Distance(m_Target.Position, tankPlayer.Position) < m_CombatDist))
+            //run away
+            if (linearDistToTarget < m_EscapeDist && targetNumHitsLeft / numHitsLeft >= 2)
             {
+                int steps = 10;
+
                 //used if none of the points are traversible
                 float maxDistFromEnemy = Mathf.Epsilon;
                 Vector3 maxDistPoint = Vector3.zero;
@@ -416,8 +471,92 @@ namespace TanksMP
                 float minDistToPlayer = Mathf.Infinity;
                 Vector3 minDistDir = Vector3.zero;
 
-                int i = 10;
-                float angleStep = 360f/i;
+                int i = steps;
+                float angleStep = 360f / steps;
+
+                NavMeshHit hitInfo;
+                for (Vector3 dir = tankPlayer.Position - m_Target.Position; i >= 0; i--, dir = Quaternion.Euler(0f, angleStep, 0f) * dir)
+                {
+                    Vector3 idealpos = m_Target.Position + dir.normalized * m_EscapeDist;
+                    if (NavMesh.Raycast(m_Target.Position, idealpos, out hitInfo, NavMesh.AllAreas))
+                    {
+                        Debug.DrawRay(m_Target.Position, dir, Color.red);
+                        //Debug.Break();
+
+                        if (maxDistFromEnemy < hitInfo.distance)
+                        {
+                            maxDistFromEnemy = hitInfo.distance;
+                            maxDistPoint = hitInfo.position;
+                        }
+                    }
+                    else
+                    {
+                        Debug.DrawRay(m_Target.Position, dir, Color.blue);
+                        //Debug.Break();
+
+                        notBlocked = true;
+
+                        float dist = Vector3.Distance(tankPlayer.Position, idealpos);
+
+                        if (minDistToPlayer > dist)
+                        {
+                            minDistToPlayer = dist;
+                            minDistDir = dir.normalized;
+                        }
+                    }
+                }
+
+                if (!notBlocked)
+                {
+                    if (tankPlayer.agent.destination != maxDistPoint)
+                    {
+                        tankPlayer.agent.ResetPath();
+                        //Vector3 dir = maxDistPoint - tankPlayer.Position;
+                        //tankPlayer.SimpleMove(new Vector2(dir.x, dir.z));
+                        tankPlayer.MoveTo(maxDistPoint);
+                    }
+                    else
+                    {
+                        tankPlayer.SimpleMove();
+                    }
+                }
+                else
+                {
+                    Vector3 dest = m_Target.Position + minDistDir * m_EscapeDist;
+                    if (tankPlayer.agent.destination != dest)
+                    {
+                        tankPlayer.agent.ResetPath();
+                        //Vector3 dir = dest - tankPlayer.Position;
+                        //tankPlayer.SimpleMove(new Vector2(dir.x, dir.z));
+                        tankPlayer.MoveTo(dest);
+                    }
+                    else
+                    {
+                        tankPlayer.SimpleMove();
+                    }
+                }
+
+                return;
+            }
+
+            //colliding or too close
+            Collider c = m_Target.GetComponent<Collider>();
+            if ((c && c.bounds.Intersects(m_Collider.bounds)) ||
+                (!isSightblocked && linearDistToTarget < m_CombatDist))
+            {
+                int steps = 10;
+
+                //used if none of the points are traversible
+                float maxDistFromEnemy = Mathf.Epsilon;
+                Vector3 maxDistPoint = Vector3.zero;
+                bool notBlocked = false;
+
+                //used for traversible points
+                float minDistToPlayer = Mathf.Infinity;
+                Vector3 minDistDir = Vector3.zero;
+
+                int i = steps;
+                float angleStep = 360f / steps;
 
                 NavMeshHit hitInfo;
                 for(Vector3 dir = tankPlayer.Position - m_Target.Position; i >= 0; i--, dir = Quaternion.Euler(0f, angleStep, 0f) * dir)
@@ -453,21 +592,39 @@ namespace TanksMP
 
                 if(!notBlocked)
                 {
-                    Vector3 dir = maxDistPoint - tankPlayer.Position;
-                    tankPlayer.SimpleMove(new Vector2(dir.x, dir.z));
-                    tankPlayer.MoveTo(maxDistPoint);
+                    if(tankPlayer.agent.destination != maxDistPoint)
+                    {
+                        tankPlayer.agent.ResetPath();
+                        //Vector3 dir = maxDistPoint - tankPlayer.Position;
+                        //tankPlayer.SimpleMove(new Vector2(dir.x, dir.z));
+                        tankPlayer.MoveTo(maxDistPoint);
+                    }
+                    else
+                    {
+                        tankPlayer.SimpleMove();
+                    }
                 }
                 else
                 {
-                    Vector3 dir = (m_Target.Position + minDistDir * m_CombatDist) - tankPlayer.Position;
-                    tankPlayer.SimpleMove(new Vector2(dir.x, dir.z));
-                    tankPlayer.MoveTo(m_Target.Position + minDistDir * m_CombatDist);
+                    Vector3 dest = m_Target.Position + minDistDir * m_CombatDist;
+                    if (tankPlayer.agent.destination != dest)
+                    {
+                        tankPlayer.agent.ResetPath();
+                        //Vector3 dir = dest - tankPlayer.Position;
+                        //tankPlayer.SimpleMove(new Vector2(dir.x, dir.z));
+                        tankPlayer.MoveTo(dest);
+                    }
+                    else
+                    {
+                        tankPlayer.SimpleMove();
+                    }
                 }
+
+                return;
             }
-            else
-            {
-                tankPlayer.MoveTo(m_Target.Position);
-            }
+
+            ResumeAgentControl();
+            tankPlayer.MoveTo(m_Target.Position);
         }
 
         private void FindPowerupUpdate()
@@ -480,7 +637,7 @@ namespace TanksMP
                 return;
             }
 
-            if (!m_PowerUp || !m_PowerUp.gameObject.activeSelf || (!tankPlayer.agent.hasPath && !tankPlayer.agent.pathPending) || tankPlayer.agent.pathStatus == NavMeshPathStatus.PathInvalid)
+            if (!m_PowerUp || !m_PowerUp.obj || (!tankPlayer.agent.hasPath && !tankPlayer.agent.pathPending) || tankPlayer.agent.pathStatus == NavMeshPathStatus.PathInvalid)
             {
                 m_PowerUp = SelectPowerup();
 
@@ -522,8 +679,21 @@ namespace TanksMP
         }
 
         #region find powerup update helpers
-        private Collectible SelectPowerup()
+        private ObjectSpawner SelectPowerup()
         {
+            if(m_SheildSpawner)
+            {
+                float timeBeforeShieldSpawn = m_NextSpawnTime - Time.time;
+                NavMesh.CalculatePath(tankPlayer.Position, m_SheildSpawner.transform.position, NavMesh.AllAreas, m_PathBuffer);
+
+                float timeToShieldSpawner = PathLength(m_PathBuffer) / m_TankSpeed;
+
+                if (Mathf.Abs(timeBeforeShieldSpawn - timeToShieldSpawner) <= 2f)
+                {
+                    return m_SheildSpawner;
+                }
+            }
+
             Collectible[] collectibles = CheckSurroundingObjectsByType(m_ItemSensorRadius,
                 (Collectible c) => c.gameObject.activeSelf);
 
@@ -546,11 +716,11 @@ namespace TanksMP
 
                     if (shield)
                     {
-                        return comparer.Compare(shield, healthBoosts[0]) < 0 ? shield : healthBoosts[0];
+                        return comparer.Compare(shield, healthBoosts[0]) < 0 ? shield.spawner : healthBoosts[0].spawner;
                     }
                     else
                     {
-                        return healthBoosts[0];
+                        return healthBoosts[0].spawner;
                     }
                 }
 
@@ -558,8 +728,21 @@ namespace TanksMP
                 int i;
                 for(i=0; i<collectibles.Length; i++)
                 {
+                    if (collectibles[i].GetType() == typeof(PowerupShield))
+                    {
+                        PowerupShield shield = (PowerupShield)collectibles[i];
+                        if (tankPlayer.shield == shield.amount)
+                            continue;
+
+                        if (!m_SheildSpawner)
+                            m_SheildSpawner = shield.spawner;
+
+                        //always prioritize sheild
+                        return shield.spawner;
+                    }
+
                     //prevent getting stuck trying to pick up a health item when on full health
-                    if(collectibles[i].GetType() == typeof(PowerupHealth) && tankPlayer.health == tankPlayer.maxHealth)
+                    if (collectibles[i].GetType() == typeof(PowerupHealth) && tankPlayer.health == tankPlayer.maxHealth)
                     {
                         continue;
                     }
@@ -570,14 +753,6 @@ namespace TanksMP
                         if(tankPlayer.ammo == powerupBullet.amount && tankPlayer.currentBullet == powerupBullet.bulletIndex)
                             continue;
                     }
-                    if(collectibles[i].GetType() == typeof(PowerupShield))
-                    {
-                        PowerupShield shield = (PowerupShield)collectibles[i];
-                        if (tankPlayer.shield == shield.amount)
-                            continue;
-                    }
-
-                    return collectibles[i];
                 }
 
                 return null;
@@ -592,14 +767,61 @@ namespace TanksMP
         #region attack update helpers
         private void PreciseShootTarget()
         {
-            Vector3 targetVelocityApprox = m_Target.agent.desiredVelocity.magnitude * (m_Target.agent.steeringTarget - m_Target.Position).normalized;
-            MotionInfo targetMotion = new MotionInfo(MotionType.NavMeshAgent, m_Target.Position, targetVelocityApprox, m_Target.gameObject);
+            if(Vector3.Distance(m_Target.Position, tankPlayer.Position) < 5f)
+            {
+                tankPlayer.AimAndShoot(m_Target.Position);
+                return;
+            }
+
+            float cosTheta = Vector3.Dot((tankPlayer.Position - m_Target.Position).normalized, m_Target.Velocity.normalized);
+
+            if(Mathf.Approximately(cosTheta, 1f) || Mathf.Approximately(cosTheta, -1f))
+            {
+                tankPlayer.AimAndShoot(m_Target.Position);
+                return;
+            }
+
+            Vector3 shotPosToEnemy = m_Target.Position - tankPlayer.Position;
+            float dist = shotPosToEnemy.magnitude;
+            float sqrDist = shotPosToEnemy.sqrMagnitude;
+
+            float a = (m_BulletSpeed * m_BulletSpeed) - (m_TankSpeed * m_TankSpeed);
+            float b = 2 * dist * m_TankSpeed * cosTheta;
+            float c = -(dist * dist);
+
+            float t1, t2, hittime = float.NaN;
+            SolveQuadEquation(a, b, c, out t1, out t2);
+
+            if ((t1 == float.NaN && t2 == float.NaN) || (t1 < 0 && t2 < 0)) return;
+            else if (t1 < 0 || t1 == float.NaN) hittime = t2;
+            else if (t2 < 0 || t2 == float.NaN) hittime = t1;
+            else hittime = Mathf.Min(t1, t2);
+
+            //Vector3 desiredDir = m_Target.Velocity + (shotPosToEnemy / hittime);
+            //Debug.Log(desiredDir.magnitude.ToString() + " , " + m_BulletSpeed.ToString());
+
+            Vector3 hitPos = hittime * m_TankSpeed * m_Target.Velocity.normalized + m_Target.Position;
+
+            if (!CheckObstaclesBetween(tankPlayer.Position, hitPos, 0f))
+            {
+                Debug.DrawLine(tankPlayer.Position, hitPos, Color.green);
+                tankPlayer.AimAndShoot(hitPos);
+            }
+            else
+            {
+                Debug.DrawLine(tankPlayer.Position, hitPos, Color.red);
+            }
+        }
+        /*
+        private void PreciseShootTarget()
+        {
+            MotionInfo targetMotion = new MotionInfo(MotionType.NavMeshAgent, m_Target.Position, m_Target.Velocity, m_Target.gameObject);
 
             Vector3 bulletDir = targetMotion.bounds.center - tankPlayer.shotPos.position;
-            MotionInfo myBulletMotion = new MotionInfo(MotionType.Linear, tankPlayer.shotPos.position, bulletDir.normalized * m_BulletSpeed, new Vector3(0.4f, 0.4f, 0.4f));
+            MotionInfo myBulletMotion = new MotionInfo(MotionType.Linear, tankPlayer.shotPos.position, bulletDir.normalized * m_BulletSpeed, Vector3.one * (m_BulletRadius * 2f));
 
             //initial guess
-            float step = 0f;
+            float step;
             Bounds targetBounds = targetMotion.bounds;
             Bounds bulletBounds;
 
@@ -607,7 +829,7 @@ namespace TanksMP
             bool success = false;
             while (tolerance < 50)
             {
-                step = Vector3.Distance(targetBounds.center, tankPlayer.shotPos.position) / (m_BulletSpeed * Time.smoothDeltaTime);
+                step = Vector3.Distance(targetBounds.center, tankPlayer.shotPos.position) / (m_BulletSpeed * Time.fixedDeltaTime);
                 targetBounds = targetMotion.PredictPosition(Mathf.CeilToInt(step));
 
                 myBulletMotion.velocity = (targetBounds.center - tankPlayer.shotPos.position).normalized * m_BulletSpeed;
@@ -631,6 +853,7 @@ namespace TanksMP
                 tankPlayer.AimAndShoot(targetBounds.center);
             }
         }
+        */
 
         //target selection:
         //degree of threat:
@@ -644,17 +867,16 @@ namespace TanksMP
             {
                 enemys = CheckSurroundingObjectsByType(m_PlayerSensorRadius,
                     (BasePlayer player) => player.teamIndex != tankPlayer.teamIndex && player.IsAlive);
-
             }
             else
             {
                 enemys = CheckSurroundingObjectsByType(m_PlayerSensorRadius,
-                    (BasePlayer player) => player.teamIndex != tankPlayer.teamIndex && player.IsAlive && !CheckObstaclesBetween(player.Position, tankPlayer.Position));
+                    (BasePlayer player) => player.teamIndex != tankPlayer.teamIndex && player.IsAlive && !CheckObstaclesBetween(player.Position, tankPlayer.Position, 0f));
             }
 
             if (enemys.Length > 0)
             {
-                int minHealth = enemys[0].health + enemys[0].shield;
+                int minHealth = NumOfHits(enemys[0].health, enemys[0].shield);
                 int minHealthIndex = 0;
 
                 int minColTime = int.MaxValue;
@@ -665,7 +887,7 @@ namespace TanksMP
 
                 for (int i = 0; i < enemys.Length; i++)
                 {
-                    int health = enemys[i].health + enemys[i].shield;
+                    int health = NumOfHits(enemys[i].health, enemys[i].shield);
                     if (minHealth > health)
                     {
                         minHealth = health;
@@ -693,7 +915,6 @@ namespace TanksMP
                 }
 
                 //someone is about to run into us
-                //TODO how to determine if someone is a threat
                 if (minColTimeIndex != -1)
                 {
                     m_Target = enemys[minColTimeIndex];
@@ -744,10 +965,12 @@ namespace TanksMP
             {
                 if (behind)
                 {
+                    //Debug.Log("behind and from left");
                     dir = Vector3.Cross(m_Threat.Velocity, Vector3.up);
                 }
                 else
                 {
+                   // Debug.Log("front and from right");
                     dir = Vector3.Cross(m_Threat.Velocity, Vector3.down);
                 }
             }
@@ -755,79 +978,76 @@ namespace TanksMP
             {
                 if (behind)
                 {
+                    //Debug.Log("behind and from right");
                     dir = Vector3.Cross(m_Threat.Velocity, Vector3.down);
                 }
                 else
                 {
+                    //Debug.Log("front and from left");
                     dir = Vector3.Cross(m_Threat.Velocity, Vector3.up);
                 }
             }
 
+            dir = Vector3.ProjectOnPlane(dir, Vector3.up);
             dir.Normalize();
 
             //rotate the dodge direction to find a direction with max dodge space
             float[] maxDist = { Mathf.Epsilon, Mathf.Epsilon }; //max dist for dir and -dir
-            float[] maxDistIndex = { -1, -1 }; //corresponding max distance
+            float[] maxDistAngleOffset = { -1, -1 }; //corresponding max distance
             bool notBlocked = false;
 
             Vector3 obstaclePos;
             Vector3 temp;
-            int[] step = { 5, -5 };
+
+            Vector3[] directions = { dir, -dir };
+            int[] step = { 5, -5, 5, -5 };
             int i = 0, j;
 
-            for(j=0; j < 2; j++)
+            float minDodgeDistance = m_Collider.size.z * 1.5f;
+            Vector3 verticalOffset = Vector3.up * (m_Collider.size.x * 0.55f);
+            Vector3 offsetedPos = tankPlayer.Position + verticalOffset;
+
+            for (j=0; j < 4; j++)
             {
                 i = 0;
-                for (temp = dir; i < 30 / step[j]; i++, temp = Quaternion.Euler(0, step[j], 0) * temp)
+                for (temp = directions[j/2]; i < Mathf.Abs(45 / step[j]); i++, temp = Quaternion.Euler(0, step[j], 0) * temp)
                 {
-                    if (CheckObstaclesBetween(tankPlayer.Position, tankPlayer.Position + dir * (m_Collider.bounds.size.z + 0.15f), out obstaclePos))
+                    if (CheckObstaclesBetween(offsetedPos, offsetedPos + temp * minDodgeDistance, out obstaclePos, m_Collider.size.x / 2f))
                     {
-                        //Debug.DrawLine(tankPlayer.Position, tankPlayer.Position + dir * (m_Collider.bounds.size.z + 0.15f), Color.red);
-                        //Debug.Break();
+                        Debug.DrawLine(offsetedPos, obstaclePos, j/2 == 1 ? Color.yellow : Color.red);
 
-                        float dist = Vector3.Distance(obstaclePos, tankPlayer.Position);
-                        if (maxDist[j] < dist)
+                        float dist = XZDistance(obstaclePos, tankPlayer.Position);
+
+                        if (maxDist[j/2] < dist)
                         {
-                            maxDist[j] = dist;
-                            maxDistIndex[j] = i;
+                            maxDist[j/2] = dist;
+                            maxDistAngleOffset[j/2] = step[j] * i;
                         }
                     }
                     else
                     {
-                        //Debug.DrawLine(tankPlayer.Position, tankPlayer.Position + dir * (m_Collider.bounds.size.z + 0.15f), Color.blue);
+                        Debug.DrawLine(offsetedPos, offsetedPos + temp * minDodgeDistance, Color.blue);
 
                         notBlocked = true;
+                        dir = Quaternion.Euler(0, step[j] * i, 0) * directions[j/2];
+
                         break;
                     }
                 }
 
                 if (notBlocked) break;
-
-                //try the other direction
-                if (m_Collider.bounds.size.z > maxDist[j])
-                {
-                    dir = -dir;
-                }
-                else
-                {
-                    break;
-                }
             }
 
-            if(!notBlocked)
+            if (!notBlocked)
             {
                 j = maxDist[0] > maxDist[1] ? 0 : 1;
                 dir = Quaternion.Euler(0, step[j] * maxDist[j], 0) * dir;
             }
-            else
-            {
-                dir = Quaternion.Euler(0, step[j] * i, 0) * dir;
-            }
 
-            //TODO: add nav mesh consideration
+            //Debug.Break();
             lookRotation = new Vector2(dir.x, dir.z);
             tankPlayer.SimpleMove(lookRotation);
-            tankPlayer.MoveTo(tankPlayer.Position + tankPlayer.transform.forward * m_DodgeExtent);
+            //tankPlayer.MoveTo(tankPlayer.Position + tankPlayer.transform.forward * m_DodgeExtent);
         }
         #endregion
 
@@ -879,6 +1099,22 @@ namespace TanksMP
             }
         }
 
+        private static void SolveQuadEquation(float a, float b, float c, out float sol1, out float sol2)
+        {
+            float insideSqrt = (b * b) - 4 * a * c;
+            if(insideSqrt < 0)
+            {
+                sol1 = float.NaN;
+                sol2 = float.NaN;
+            }
+            else
+            {
+                float sqrt = Mathf.Sqrt(insideSqrt);
+                sol1 = (-b + sqrt) / (2 * a);
+                sol2 = (-b - sqrt) / (2 * a);
+            }
+        }
+
         private static int NumOfHits(int health, int shield)
         {
             return shield + health / 3 + 1;
@@ -896,34 +1132,85 @@ namespace TanksMP
             return ret;
         }
 
-        private static bool CheckObstaclesBetween(Vector3 pos1, Vector3 pos2)
-        {
-            //RaycastHit hitInfo;
-            if (Physics.Linecast(pos1, pos2, 1 << 0, QueryTriggerInteraction.Ignore))
-            {
-                //Debug.Log(hitInfo.collider.gameObject.name);
-                //Debug.DrawLine(pos1, pos2, Color.red);
-                return true;
-            }
-
-            //Debug.DrawLine(pos1, pos2, Color.green);
-            return false;
-        }
-
-        //given two positions, check if there is an obstacle between the two
-        //if there is an obstacle, obstacle position is filled
-        private static bool CheckObstaclesBetween(Vector3 pos1, Vector3 pos2, out Vector3 obstaclePosition)
+        private static bool CheckObstaclesBetween(Vector3 pos1, Vector3 pos2, out Vector3 obstaclePosition, Vector3 dimension)
         {
             obstaclePosition = default(Vector3);
             RaycastHit hitInfo;
 
-            if(Physics.Linecast(pos1, pos2, out hitInfo, 1 << 0, QueryTriggerInteraction.Ignore))
+            if (dimension == Vector3.zero)
             {
-                obstaclePosition = hitInfo.point;
-                return true;
-            }
+                //RaycastHit hitInfo;
+                if (Physics.Linecast(pos1, pos2, out hitInfo, 1 << 0, QueryTriggerInteraction.Ignore))
+                {
+                    obstaclePosition = hitInfo.point;
+                    return true;
+                }
 
-            return false;
+                return false;
+            }
+            else
+            {
+                if (Physics.BoxCast(pos1, dimension * 0.5f, pos2 - pos1, out hitInfo, Quaternion.identity, Vector3.Distance(pos1, pos2), 1 << 0, QueryTriggerInteraction.Ignore))
+                {
+                    obstaclePosition = hitInfo.point;
+                    return true;
+                }
+
+                return false;
+            }
+        }
+
+        private static bool CheckObstaclesBetween(Vector3 pos1, Vector3 pos2, float radius)
+        {
+            if(Mathf.Approximately(radius, 0f))
+            {
+                //RaycastHit hitInfo;
+                if (Physics.Linecast(pos1, pos2, 1 << 0, QueryTriggerInteraction.Ignore))
+                {
+                    return true;
+                }
+
+                return false;
+            }
+            else
+            {
+                Ray ray = new Ray(pos1, pos2 - pos1);
+                if(Physics.SphereCast(ray, radius, Vector3.Distance(pos1, pos2), 1 << 0, QueryTriggerInteraction.Ignore))
+                {
+                    return true;
+                }
+
+                return false;
+            }
+        }
+
+        //given two positions, check if there is an obstacle between the two
+        //if there is an obstacle, obstacle position is filled
+        private static bool CheckObstaclesBetween(Vector3 pos1, Vector3 pos2, out Vector3 obstaclePosition, float radius)
+        {
+            obstaclePosition = default(Vector3);
+            RaycastHit hitInfo;
+
+            if (Mathf.Approximately(radius, 0f))
+            {
+                if (Physics.Linecast(pos1, pos2, out hitInfo, 1 << 0, QueryTriggerInteraction.Ignore))
+                {
+                    obstaclePosition = hitInfo.point;
+                    return true;
+                }
+
+                return false;
+            }
+            else
+            {
+                if (Physics.SphereCast(pos1, radius, pos2 - pos1, out hitInfo, Vector3.Distance(pos1, pos2), 1 << 0, QueryTriggerInteraction.Ignore))
+                {
+                    obstaclePosition = hitInfo.point;
+                    return true;
+                }
+
+                return false;
+            }
         }
 
         //given two objects' motion infos and their sizes, predict if they will collide
@@ -947,6 +1234,12 @@ namespace TanksMP
 
             return -1;
         }
+
+        private static float XZDistance(Vector3 x, Vector3 y)
+        {
+            return Vector3.Distance(Vector3.ProjectOnPlane(x, Vector3.up), Vector3.ProjectOnPlane(y, Vector3.up));
+        }
+
         #endregion
 
         #region debug
@@ -957,6 +1250,7 @@ namespace TanksMP
             GUILayout.Box("current threat: " +
                 (m_Threat ? m_Threat.name : "none"));
             GUILayout.Box("current state: " + m_CurState.ToString());
+            GUILayout.Box("enemy velocity: " + (m_Target ? m_Target.Velocity.magnitude.ToString() : "no enemy"));
         }
 
         private void OnDrawGizmos()
