@@ -269,7 +269,7 @@ namespace TanksMP
 
             if (m_SheildSpawner)
             {
-                m_HasSheild = m_SheildSpawner.obj ? true : false;
+                m_HasSheild = m_SheildSpawner.obj;
 
                 if (m_HasShieldLastFrame && !m_HasSheild)
                 {
@@ -398,7 +398,13 @@ namespace TanksMP
 
         private void SimpleGoToPowerupUpdate()
         {
-            if (!m_PowerUp || !m_PowerUp.obj)
+            if (!m_PowerUp || (m_PowerUp != m_SheildSpawner && !m_PowerUp.obj))
+            {
+                ChangeState(AIState.ActivelyAttack);
+                return;
+            }
+
+            if (tankPlayer.agent.remainingDistance <= tankPlayer.agent.stoppingDistance && !tankPlayer.agent.pathPending)
             {
                 ChangeState(AIState.ActivelyAttack);
                 return;
@@ -407,12 +413,6 @@ namespace TanksMP
             if (!tankPlayer.agent.hasPath && !tankPlayer.agent.pathPending || tankPlayer.agent.pathStatus == NavMeshPathStatus.PathInvalid)
             {
                 tankPlayer.MoveTo(m_PowerUp.transform.position);
-                return;
-            }
-
-            if (tankPlayer.agent.remainingDistance <= tankPlayer.agent.stoppingDistance && !tankPlayer.agent.pathPending)
-            {
-                ChangeState(AIState.ActivelyAttack);
                 return;
             }
         }
@@ -431,10 +431,12 @@ namespace TanksMP
             int numHitsLeft = NumOfHits(tankPlayer.health, tankPlayer.shield);
             int targetNumHitsLeft = NumOfHits(m_Target.health, m_Target.shield);
 
-            if (spawner && spawner.obj)
+            if (spawner)
             {
                 if (numHitsLeft != 0 && targetNumHitsLeft /  numHitsLeft >= 2)
                 {
+                    m_PowerUp = spawner;
+                    tankPlayer.MoveTo(m_PowerUp.transform.position);
                     ChangeState(AIState.SimpleGoToPowerup);
                     return;
                 }
@@ -447,9 +449,10 @@ namespace TanksMP
 
                 if ((lengthToTarget >= 10f && targetNumHitsLeft > 1) || lengthToTarget >= 15f)
                 {
-                    if (lengthToCollectible <= 10f || (spawner.obj.GetType() == typeof(PowerupShield) && lengthToCollectible <= 15f))
+                    if (lengthToCollectible <= 10f || (spawner == m_SheildSpawner && lengthToCollectible <= 15f))
                     {
                         m_PowerUp = spawner;
+                        tankPlayer.MoveTo(m_PowerUp.transform.position);
                         ChangeState(AIState.SimpleGoToPowerup);
                         return;
                     }
@@ -596,7 +599,6 @@ namespace TanksMP
                 {
                     if(tankPlayer.agent.destination != maxDistPoint)
                     {
-                        tankPlayer.agent.ResetPath();
                         //Vector3 dir = maxDistPoint - tankPlayer.Position;
                         //tankPlayer.SimpleMove(new Vector2(dir.x, dir.z));
                         tankPlayer.MoveTo(maxDistPoint);
@@ -611,7 +613,6 @@ namespace TanksMP
                     Vector3 dest = m_Target.Position + minDistDir * m_CombatDist;
                     if (tankPlayer.agent.destination != dest)
                     {
-                        tankPlayer.agent.ResetPath();
                         //Vector3 dir = dest - tankPlayer.Position;
                         //tankPlayer.SimpleMove(new Vector2(dir.x, dir.z));
                         tankPlayer.MoveTo(dest);
@@ -625,7 +626,6 @@ namespace TanksMP
                 return;
             }
 
-            ResumeAgentControl();
             tankPlayer.MoveTo(m_Target.Position);
         }
 
@@ -727,6 +727,8 @@ namespace TanksMP
                 }
 
                 Array.Sort(collectibles, comparer);
+
+                List<Collectible> tempList = new List<Collectible>(collectibles.Length);
                 int i;
                 for(i=0; i<collectibles.Length; i++)
                 {
@@ -748,16 +750,20 @@ namespace TanksMP
                     {
                         continue;
                     }
+
                     //prevent getting stuck trying to pick up an item the tank already has
                     if(collectibles[i].GetType() == typeof(PowerupBullet)) //TODO: hardcoded 1
                     {
                         PowerupBullet powerupBullet = (PowerupBullet)collectibles[i];
+
                         if(tankPlayer.ammo == powerupBullet.amount && tankPlayer.currentBullet == powerupBullet.bulletIndex)
                             continue;
                     }
+
+                    tempList.Add(collectibles[i]);
                 }
 
-                return null;
+                return tempList.Count > 0 ? tempList[0].spawner : null;
             }
             else
             {
