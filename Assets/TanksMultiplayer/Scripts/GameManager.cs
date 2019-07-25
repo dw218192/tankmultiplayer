@@ -117,6 +117,9 @@ namespace TanksMP
         /// </summary>
 		public static bool isMaster()
 		{
+            if (GetInstance() == null)
+                return false;
+
 			return GetInstance().isServer;
 		}
 

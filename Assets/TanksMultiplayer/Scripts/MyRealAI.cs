@@ -291,7 +291,13 @@ namespace TanksMP
                     ChangeState(AIState.DodgeAndAttack);
                 }
             }
-            
+
+            if (m_Target && !CheckObstaclesBetween(m_Target.Position, tankPlayer.Position))
+            {
+                //aim
+                PreciseShootTarget();
+            }
+
             switch (m_CurState)
             {
                 case AIState.DodgeAndAttack:
@@ -327,7 +333,6 @@ namespace TanksMP
             m_CurState = newState;
         }
 
-
         private void DodgeAttackUpdate()
         {
             tankPlayer.agent.updateRotation = false;
@@ -339,12 +344,6 @@ namespace TanksMP
                 return;
             }
 
-            if (m_Target && !CheckObstaclesBetween(m_Target.Position, tankPlayer.Position))
-            {
-                //aim
-                PreciseShootTarget();
-            }
-
             Dodge();
         }
 
@@ -354,12 +353,6 @@ namespace TanksMP
             {
                 ChangeState(AIState.ActivelyAttack);
                 return;
-            }
-
-            if (m_Target && !CheckObstaclesBetween(m_Target.Position, tankPlayer.Position))
-            {
-                //aim
-                PreciseShootTarget();
             }
 
             if (!tankPlayer.agent.hasPath && !tankPlayer.agent.pathPending || tankPlayer.agent.pathStatus == NavMeshPathStatus.PathInvalid)
@@ -387,12 +380,19 @@ namespace TanksMP
 
             Collectible collectible = SelectPowerup();
 
+            int numHitsLeft = NumOfHits(tankPlayer.health, tankPlayer.shield);
+            if (NumOfHits(m_Target.health, m_Target.shield) - numHitsLeft >= 3 && collectible)
+            {
+                ChangeState(AIState.SimpleGoToPowerup);
+                return;
+            }
+
             if (collectible)
             {
                 NavMeshPath path = new NavMeshPath();
                 NavMesh.CalculatePath(tankPlayer.Position, collectible.transform.position, NavMesh.AllAreas, path);
 
-                if (pathLength(path) < 10f)
+                if (PathLength(path) < 10f)
                 {
                     m_PowerUp = collectible;
                     ChangeState(AIState.SimpleGoToPowerup);
@@ -452,19 +452,21 @@ namespace TanksMP
                 }
 
                 if(!notBlocked)
+                {
+                    Vector3 dir = maxDistPoint - tankPlayer.Position;
+                    tankPlayer.SimpleMove(new Vector2(dir.x, dir.z));
                     tankPlayer.MoveTo(maxDistPoint);
+                }
                 else
+                {
+                    Vector3 dir = (m_Target.Position + minDistDir * m_CombatDist) - tankPlayer.Position;
+                    tankPlayer.SimpleMove(new Vector2(dir.x, dir.z));
                     tankPlayer.MoveTo(m_Target.Position + minDistDir * m_CombatDist);
+                }
             }
             else
             {
                 tankPlayer.MoveTo(m_Target.Position);
-            }
-
-            if (!isSightblocked)
-            {
-                //aim
-                PreciseShootTarget();
             }
         }
 
@@ -847,7 +849,7 @@ namespace TanksMP
                 NavMesh.CalculatePath(tankPlayer.Position, x.transform.position, NavMesh.AllAreas, pathA);
                 NavMesh.CalculatePath(tankPlayer.Position, y.transform.position, NavMesh.AllAreas, pathB);
 
-                float pathLengthA = pathLength(pathA), pathLengthB = pathLength(pathB);
+                float pathLengthA = PathLength(pathA), pathLengthB = PathLength(pathB);
                 if (Mathf.Approximately(pathLengthA, pathLengthB)) return 0;
                 else if (pathLengthA < pathLengthB) return -1;
                 else return 1;
@@ -877,7 +879,12 @@ namespace TanksMP
             }
         }
 
-        private static float pathLength(NavMeshPath path)
+        private static int NumOfHits(int health, int shield)
+        {
+            return shield + health / 3 + 1;
+        }
+
+        private static float PathLength(NavMeshPath path)
         {
             float ret = 0f;
             for (int i = 0; i < path.corners.Length - 1; i++)
