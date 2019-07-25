@@ -324,7 +324,7 @@ namespace TanksMP
                 }
             }
 
-            if (m_Target && !CheckObstaclesBetween(m_Target.shotPos.position, tankPlayer.shotPos.position, m_BulletRadius))
+            if (m_Target)
             {
                 //aim
                 PreciseShootTarget();
@@ -775,7 +775,7 @@ namespace TanksMP
         #region attack update helpers
         private void PreciseShootTarget()
         {
-            if(Vector3.Distance(m_Target.Position, tankPlayer.Position) < 5f)
+            if(Vector3.Distance(m_Target.Position, tankPlayer.Position) <= 6f)
             {
                 tankPlayer.AimAndShoot(m_Target.Position);
                 return;
@@ -1251,6 +1251,7 @@ namespace TanksMP
         #endregion
 
         #region debug
+        /*
         private void OnGUI()
         {
             GUILayout.Box("num of surrounding bullets: " +
@@ -1260,6 +1261,7 @@ namespace TanksMP
             GUILayout.Box("current state: " + m_CurState.ToString());
             GUILayout.Box("sheild spawn countdown: " + (m_NextSpawnTime - Time.time).ToString());
         }
+        */
 
         private void OnDrawGizmos()
         {
