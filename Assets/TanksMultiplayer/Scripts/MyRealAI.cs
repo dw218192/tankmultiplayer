@@ -228,6 +228,7 @@ namespace TanksMP
         private float m_BulletSpeed = 10;
         private float m_TankSpeed = 8;
         private float m_BulletRadius = 0.2f;
+        private int m_ShieldAmount = 3;
 
         private Bullet m_Threat;
         private Bullet m_ThreatLastFrame;
@@ -246,7 +247,7 @@ namespace TanksMP
         private float m_LastPickupTime;
         private float m_NextSpawnTime;
 
-        private NavMeshPath m_PathBuffer = new NavMeshPath();
+        private NavMeshPath m_PathBuffer;
 
         //debug
         Bullet[] bullets;
@@ -259,6 +260,7 @@ namespace TanksMP
             ChangeState(AIState.FindPowerup);
             m_PlayerMotionInfo = new MotionInfo(MotionType.NavMeshAgent, tankPlayer.Position, tankPlayer.Velocity, tankPlayer.gameObject);
             m_PredictionStep = Mathf.RoundToInt(m_PredictionTime / Time.fixedDeltaTime);
+            m_PathBuffer = new NavMeshPath();
         }
 
         protected override void OnFixedUpdate()
@@ -272,7 +274,7 @@ namespace TanksMP
                 if (m_HasShieldLastFrame && !m_HasSheild)
                 {
                     m_LastPickupTime = Time.time;
-                    m_NextSpawnTime = m_LastPickupTime + 10f;
+                    m_NextSpawnTime = m_LastPickupTime + 15f;
                 }
 
                 m_HasShieldLastFrame = m_HasSheild;
@@ -429,7 +431,7 @@ namespace TanksMP
             int numHitsLeft = NumOfHits(tankPlayer.health, tankPlayer.shield);
             int targetNumHitsLeft = NumOfHits(m_Target.health, m_Target.shield);
 
-            if (spawner)
+            if (spawner && spawner.obj)
             {
                 if (numHitsLeft != 0 && targetNumHitsLeft /  numHitsLeft >= 2)
                 {
@@ -681,7 +683,7 @@ namespace TanksMP
         #region find powerup update helpers
         private ObjectSpawner SelectPowerup()
         {
-            if(m_SheildSpawner)
+            if(m_SheildSpawner && tankPlayer.shield < m_ShieldAmount)
             {
                 float timeBeforeShieldSpawn = m_NextSpawnTime - Time.time;
                 NavMesh.CalculatePath(tankPlayer.Position, m_SheildSpawner.transform.position, NavMesh.AllAreas, m_PathBuffer);
@@ -731,7 +733,7 @@ namespace TanksMP
                     if (collectibles[i].GetType() == typeof(PowerupShield))
                     {
                         PowerupShield shield = (PowerupShield)collectibles[i];
-                        if (tankPlayer.shield == shield.amount)
+                        if (tankPlayer.shield == m_ShieldAmount)
                             continue;
 
                         if (!m_SheildSpawner)
@@ -1250,7 +1252,7 @@ namespace TanksMP
             GUILayout.Box("current threat: " +
                 (m_Threat ? m_Threat.name : "none"));
             GUILayout.Box("current state: " + m_CurState.ToString());
-            GUILayout.Box("enemy velocity: " + (m_Target ? m_Target.Velocity.magnitude.ToString() : "no enemy"));
+            GUILayout.Box("sheild spawn countdown: " + (m_NextSpawnTime - Time.time).ToString());
         }
 
         private void OnDrawGizmos()
